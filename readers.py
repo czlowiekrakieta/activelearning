@@ -1,16 +1,15 @@
 from glob import glob
 import os, pickle, numpy as np
 import matplotlib.pyplot as plt
-
-DATASETS = '/home/luke/DATASETS/'
+from paths import DATASETS
 
 
 def normalize(X):
-    return X.astype(float)/255.
+    return (X.astype(float)/255. - 1/2)*2
 
 
 def read_batch_small(nr=1):
-    bpath = '/home/luke/DATASETS/cifar-10-batches-py/data_batch_{}'.format(nr)
+    bpath = os.path.join(DATASETS, 'cifar-10-batches-py', 'data_batch_{}'.format(nr))
     with open(bpath, 'rb') as fo:
         data = pickle.load(fo, encoding='bytes')
     return data
@@ -54,9 +53,9 @@ def read_cifar100_data(base=DATASETS):
     dat = glob(os.path.join(base, 'cifar-100-python', '*'))
     dat = pickle.load(open(dat[-1], 'rb'), encoding='bytes')
     X = dat[b'data'].reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
-    y_coarse = dat[b'coarse_labels']
+    # y_coarse = dat[b'coarse_labels']
     y_fine = dat[b'fine_labels']
-    return normalize(X), y_fine, y_coarse
+    return normalize(X), y_fine
 
 
 def read_caltech_101(track=False):
@@ -91,3 +90,12 @@ def read_caltech_101(track=False):
         cnt += 1
 
     return X, y, names
+
+
+def read_mnist():
+    from tensorflow.examples.tutorials.mnist import input_data
+    mnist = input_data.read_data_sets('MNIST_data', one_hot=False)
+    X = mnist.train.images.reshape(-1, 28, 28, 1)
+    y = mnist.train.labels
+
+    return X, y

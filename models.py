@@ -1,4 +1,4 @@
-import tensorflow as tf
+# import tensorflow as tf
 from keras.layers import Dense, Flatten, MaxPool2D, Conv2D, Dropout, BatchNormalization
 from keras.models import Sequential
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau
@@ -6,7 +6,7 @@ from keras.callbacks import EarlyStopping, ReduceLROnPlateau
 callbacks = [EarlyStopping(), ReduceLROnPlateau()]
 
 
-def smallnet(filters=None, kernels=None, input_shape=(32, 32, 3), dense_final=1024):
+def smallnet(filters=None, kernels=None, input_shape=(32, 32, 3), dense_final=1024, *args, **kwargs):
     if filters is None:
         filters = [64, 64]
     if kernels is None:

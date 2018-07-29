@@ -1,9 +1,15 @@
 from abc import abstractmethod
 import numpy as np
+import pickle
 from random import sample
+from paths import HISTORIES
+from datetime import datetime
+from os.path import join
+from os import mkdir
 
 # TODO: history of chosen samples
 # TODO: regression implementation
+
 
 def compute_uncertainty(proba_preds, method):
     order = np.argsort(proba_preds, axis=1)
@@ -38,9 +44,14 @@ def select_best_samples(candidates, values, final_batch_size, method='most_uncer
 
 
 class ActiveLearningTask:
+    """
+    Base abstract class.
+
+    """
     def __init__(self, model, x_labeled, y_labels, x_unlabeled,
                  y_unlabeled, task, candidate_batch=320, final_batch=32, update_every_k_iterations=5,
-                 variational_dropout_copies=10, method='en', **kwargs):
+                 variational_dropout_copies=10, method='en', dump_history_every_k_iterations=30,
+                 iterations=1000, id_string=None, info_kwargs=None, *args, **kwargs):
         if task.lower() not in {'regression', 'classification'}:
             raise NameError("task variable must be a string equal to "
                             "either 'regression' or 'classification'")
@@ -58,6 +69,10 @@ class ActiveLearningTask:
         self.ueki = update_every_k_iterations
         self.rounds_since_update = 0
         self.available_xu_idx = np.arange(self.XU.shape[0])
+        self.dheki = dump_history_every_k_iterations
+        self.ID = id_string
+
+        self.date = datetime.now().strftime('%c')
 
         if task == 'classification' and method.lower() not in {'ms', 'lc', 'en'}:
             raise NameError("method variable has to be string equal to ms, lc, en. Respectively: "
@@ -67,9 +82,59 @@ class ActiveLearningTask:
         self.queried_samples_idx = []
         self.queried_labels = []
 
+        self.history = []
+
+        self.iters = iterations
+        self.IK = info_kwargs or {}
+
+        self.path = join(HISTORIES, self.experiment_id)
+        mkdir(join(HISTORIES, self.experiment_id))
+
+    def run(self):
+        with open(join(self.path, 'params.pkl'), 'wb') as f:
+            pickle.dump(self.params(), f)
+
+        for i in range(self.iters):
+            self.one_round()
+
+            if i % self.dheki:
+                with open(join(self.path, 'HISTORY-' + str(i) + '.pkl'), 'wb') as f:
+                    pickle.dump(self.history, f)
+
+                self.history = []
+
+            print('ITERATIONS', i)
+
     @abstractmethod
     def one_round(self):
-        raise NotImplementedError
+        raise NotImplementedError("ActiveLearning class is not supposed to be used directly. "
+                                  "Use one of its derived classes.")
+
+    @abstractmethod
+    def params(self):
+        raise NotImplementedError("ActiveLearning class is not supposed to be used directly. "
+                                  "Use one of its derived classes.")
+
+    def base_params(self):
+        p = {
+            'candidate_batch': self.candidate_batch,
+            'final_batch': self.final_batch,
+            'method': self.method,
+            'task': self.task,
+        }
+        p.update(self.IK)
+        return p
+
+    @property
+    def experiment_id(self):
+        L = [self.NAME, self.task, self.date]
+        if self.ID is not None:
+            L = [self.ID] + L
+
+        for n in ['model_name', 'dataset']:
+            if n in self.IK:
+                L.append(self.IK[n])
+        return '__'.join(L)
 
 
 class QueryByCommittee(ActiveLearningTask):
@@ -77,13 +142,24 @@ class QueryByCommittee(ActiveLearningTask):
 
 
 class UncertaintySampling(ActiveLearningTask):
+    """
+    Class for uncertainty sampling
+
+    """
+
+    NAME = 'US'
+
+    def params(self):
+        return self.base_params()
+
     def __init__(self, model, x_labeled, y_labeled, x_unlabeled, y_unlabeled, task,
-                 candidate_batch=320, final_batch=32, method='ms'):
+                 candidate_batch=320, final_batch=32, method='ms', iterations=100, *args, **kwargs):
 
         super(UncertaintySampling, self).__init__(model, x_labeled,
                                                   y_labels=y_labeled,
                                                   x_unlabeled=x_unlabeled,
                                                   y_unlabeled=y_unlabeled,
+                                                  iterations=iterations,
                                                   task=task,
                                                   candidate_batch=candidate_batch,
                                                   final_batch=final_batch,
@@ -102,8 +178,16 @@ class UncertaintySampling(ActiveLearningTask):
             self.queried_samples_idx.extend(lc_pool_idx)
             self.queried_labels.extend(self.YU[lc_pool_idx])
 
+            h_dict = {
+                'queried_idx': lc_pool_idx,
+                'queried_labels': self.YU[lc_pool_idx],
+                'candidates_values': value,
+                'candidates_idx': candidates_idx,
+            }
+
+            self.history.append(h_dict)
+
         else:
-            preds = self.model.predict(candidates)
             raise NotImplementedError
 
         return candidates_idx, value
@@ -117,19 +201,26 @@ class CEAL(ActiveLearningTask):
     https://arxiv.org/pdf/1701.03551.pdf
     """
 
-    def __init__(self, model, x_labeled, y_labeled, x_unlabeled, y_unlabeled, task='regression', method='ms',
-                 entropy_threshold=0.05, mean_to_variance_threshold=None, candidate_batch=320,
-                 final_batch=32, update_every_k_iterations=5):
+    NAME = 'CEAL'
+
+    def __init__(self, model, x_labeled, y_labeled, x_unlabeled, y_unlabeled, task='classification', method='ms',
+                 entropy_threshold=0.05, mean_to_variance_threshold=None, candidate_batch=320, iterations=100,
+                 final_batch=32, update_every_k_iterations=5, *args, **kwargs):
 
         super(CEAL, self).__init__(model, x_labeled, y_labels=y_labeled, x_unlabeled=x_unlabeled, y_unlabeled=y_unlabeled,
                                    task=task, method=method, candidate_batch=candidate_batch, final_batch=final_batch,
-                                   update_every_k_iterations=update_every_k_iterations)
+                                   update_every_k_iterations=update_every_k_iterations, iterations=iterations)
 
         self.et = entropy_threshold
         self.mtv = mean_to_variance_threshold
 
         self.pseudo_labeled_idx = []
         self.pseudo_labels = []
+
+    def params(self):
+        p = self.base_params()
+        p.update({'entropy_threshold': self.et, 'mean_to_variance': self.mtv})
+        return p
 
     def one_round(self):
         candidates_idx = np.random.permutation(self.available_xu_idx)[:self.candidate_batch]
@@ -183,6 +274,12 @@ class CEAL(ActiveLearningTask):
 
 
 class Random(ActiveLearningTask):
+    """
+    Random baseline for comparison
+
+    """
+
+    NAME = 'RANDOM'
 
     def one_round(self):
         candidates_idx = np.random.permutation(self.available_xu_idx)[:self.final_batch]
