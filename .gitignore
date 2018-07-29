@@ -1,0 +1,5 @@
+tensorflowtest.py
+__pycache__
+**.pyc
+venv/*
+**.ipynb
