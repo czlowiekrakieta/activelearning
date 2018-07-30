@@ -23,5 +23,5 @@ def smallnet(filters=None, kernels=None, input_shape=(32, 32, 3), dense_final=10
     model.add(Flatten())
     model.add(Dense(dense_final))
     model.add(Dense(10, activation='softmax'))
-    model.compile('sgd', loss='sparse_categorical_crossentropy')
+    model.compile('sgd', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     return model

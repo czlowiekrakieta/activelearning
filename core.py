@@ -6,6 +6,8 @@ from paths import HISTORIES
 from datetime import datetime
 from os.path import join
 from os import mkdir
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, log_loss
 
 # TODO: history of chosen samples
 # TODO: regression implementation
@@ -48,24 +50,25 @@ class ActiveLearningTask:
     Base abstract class.
 
     """
-    def __init__(self, model, x_labeled, y_labels, x_unlabeled,
-                 y_unlabeled, task, candidate_batch=320, final_batch=32, update_every_k_iterations=5,
-                 variational_dropout_copies=10, method='en', dump_history_every_k_iterations=30,
-                 iterations=1000, id_string=None, info_kwargs=None, *args, **kwargs):
+    def __init__(self, model, x_labeled, y_labeled, x_unlabeled,
+                 y_unlabeled, task, candidate_batch=320, final_batch=32, update_every_k_iterations=5, callbacks=None,
+                 variational_dropout_copies=10, method='en', dump_history_every_k_iterations=30, epochs=10,
+                 iterations=1000, id_string=None, info_kwargs=None, validation_split=0.2, *args, **kwargs):
         if task.lower() not in {'regression', 'classification'}:
             raise NameError("task variable must be a string equal to "
                             "either 'regression' or 'classification'")
 
+        self.scores = []
         self.vd_copies = variational_dropout_copies
         self.model = model
-        self.XL = x_labeled
-        self.YL = y_labels
-        self.XU = x_unlabeled
-        self.YU = y_unlabeled
+        self.XL, self.XL_val, self.YL, self.YL_val = train_test_split(x_labeled, y_labeled, test_size=validation_split)
+        self.XU, self.XU_val, self.YU, self.YU_val = train_test_split(x_unlabeled, y_unlabeled,
+                                                                      test_size=validation_split)
+        self.epochs = epochs
         self.task = task
         self.candidate_batch = candidate_batch
         self.final_batch = final_batch
-        self.fit_kwargs = kwargs
+        self.callbacks = callbacks
         self.ueki = update_every_k_iterations
         self.rounds_since_update = 0
         self.available_xu_idx = np.arange(self.XU.shape[0])
@@ -97,13 +100,19 @@ class ActiveLearningTask:
         for i in range(self.iters):
             self.one_round()
 
-            if i % self.dheki:
+            if i % self.dheki == 0:
                 with open(join(self.path, 'HISTORY-' + str(i) + '.pkl'), 'wb') as f:
                     pickle.dump(self.history, f)
 
                 self.history = []
 
-            print('ITERATIONS', i)
+            if self.task == 'classification':
+                proba_preds = self.model.predict_proba(self.XU_val)
+                self.scores.append({'accuracy': accuracy_score(self.YU_val, proba_preds.argmax(axis=1)),
+                                    'log_loss': log_loss(self.YU_val, proba_preds)})
+                print('ITERATION: {}. Acc. {:.2f}, LL: {:.2f}'.format(i,
+                                                                      self.scores[-1]['accuracy'],
+                                                                      self.scores[-1]['log_loss']))
 
     @abstractmethod
     def one_round(self):
@@ -112,8 +121,7 @@ class ActiveLearningTask:
 
     @abstractmethod
     def params(self):
-        raise NotImplementedError("ActiveLearning class is not supposed to be used directly. "
-                                  "Use one of its derived classes.")
+        return self.base_params()
 
     def base_params(self):
         p = {
@@ -156,14 +164,14 @@ class UncertaintySampling(ActiveLearningTask):
                  candidate_batch=320, final_batch=32, method='ms', iterations=100, *args, **kwargs):
 
         super(UncertaintySampling, self).__init__(model, x_labeled,
-                                                  y_labels=y_labeled,
+                                                  y_labeled=y_labeled,
                                                   x_unlabeled=x_unlabeled,
                                                   y_unlabeled=y_unlabeled,
                                                   iterations=iterations,
                                                   task=task,
                                                   candidate_batch=candidate_batch,
                                                   final_batch=final_batch,
-                                                  method=method)
+                                                  method=method, *args, **kwargs)
 
     def one_round(self):
         candidates_idx = np.random.permutation(self.XU.shape[0])[:self.candidate_batch]
@@ -186,6 +194,9 @@ class UncertaintySampling(ActiveLearningTask):
             }
 
             self.history.append(h_dict)
+            self.model.fit(self.XU[self.queried_samples_idx], self.YU[self.queried_samples_idx],
+                           validation_data=(self.XL_val, self.YL_val),
+                           callbacks=self.callbacks, epochs=self.epochs)
 
         else:
             raise NotImplementedError
@@ -207,9 +218,9 @@ class CEAL(ActiveLearningTask):
                  entropy_threshold=0.05, mean_to_variance_threshold=None, candidate_batch=320, iterations=100,
                  final_batch=32, update_every_k_iterations=5, *args, **kwargs):
 
-        super(CEAL, self).__init__(model, x_labeled, y_labels=y_labeled, x_unlabeled=x_unlabeled, y_unlabeled=y_unlabeled,
+        super(CEAL, self).__init__(model, x_labeled, y_labeled=y_labeled, x_unlabeled=x_unlabeled, y_unlabeled=y_unlabeled,
                                    task=task, method=method, candidate_batch=candidate_batch, final_batch=final_batch,
-                                   update_every_k_iterations=update_every_k_iterations, iterations=iterations)
+                                   update_every_k_iterations=update_every_k_iterations, iterations=iterations, *args, **kwargs)
 
         self.et = entropy_threshold
         self.mtv = mean_to_variance_threshold
@@ -257,7 +268,10 @@ class CEAL(ActiveLearningTask):
         if self.rounds_since_update == self.ueki:
             x_update = self.XU[self.pseudo_labeled_idx + self.queried_samples_idx]
             y_update = self.pseudo_labels + self.queried_labels
-            self.model.fit(x_update, y_update, **self.fit_kwargs)
+            self.model.fit(x_update, y_update,
+                           validation_data=(self.XL_val, self.YL_val),
+                           callbacks=self.callbacks,
+                           epochs=self.epochs)
 
             """
             from the paper itself:
@@ -291,4 +305,7 @@ class Random(ActiveLearningTask):
         self.available_xu_idx = np.setdiff1d(self.available_xu_idx, self.queried_samples_idx)
 
         x_update = self.XU[self.queried_samples_idx]
-        self.model.fit(x_update, self.queried_labels, **self.fit_kwargs)
+        self.model.fit(x_update, self.YU[self.queried_samples_idx],
+                       epochs=self.epochs,
+                       callbacks=self.callbacks,
+                       validation_data=(self.XL_val, self.YL_val))

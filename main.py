@@ -1,6 +1,6 @@
 from core import CEAL, UncertaintySampling, Random
 from readers import read_caltech_101, read_cifar10_data, read_cifar100_data, read_mnist
-from models import smallnet
+from models import smallnet, EarlyStopping
 
 import numpy as np
 import argparse
@@ -8,7 +8,7 @@ import argparse
 algodict = {
     'CEAL': CEAL,
     'US': UncertaintySampling,
-    'Random': Random
+    'random': Random
 }
 
 readerdict = {
@@ -40,12 +40,15 @@ def main():
     algo_parser.add_argument('--mean_to_variance_threshold', default=0.05, type=float)
     algo_parser.add_argument('--entropy_threshold', default=0.05, type=float)
     algo_parser.add_argument('--update_every_k_iterations', default=5, type=int)
+    algo_parser.add_argument('--validation_split')
 
     model_parser = argparse.ArgumentParser()
-    model_parser.add_argument('--epochs', default=15)
+    model_parser.add_argument('--epochs', default=35)
     model_parser.add_argument('--batch_size', default=64)
     model_parser.add_argument('--filters', type=int, nargs='+')
     model_parser.add_argument('--kernels', type=int, nargs='+')
+    model_parser.add_argument('--patience', type=int, default=3)
+    # model_parser.add_argument('--sampled_epochs', default=2)
 
     I = intro_parser.parse_known_args()[0]
 
@@ -63,9 +66,15 @@ def main():
     model_kwargs = vars(model_parser.parse_known_args()[0])
     model_kwargs['input_shape'] = X[0].shape
     model = models[I.model_name](**model_kwargs)
+    model.fit(X[labeled_idx], y[labeled_idx],
+              epochs=model_kwargs['epochs'],
+              batch_size=model_kwargs['batch_size'],
+              validation_split=.2,
+              callbacks=[EarlyStopping(patience=model_kwargs['patience'])])
 
     algo_kwargs['model'] = model
-    algo = algodict[I.algorithm](**algo_kwargs)
+    algo_kwargs['callbacks'] = [EarlyStopping(patience=model_kwargs['patience'])]
+    algo = algodict[I.algorithm](id_string=I.dataset, info_kwargs=vars(I), **algo_kwargs)
 
     algo.run()
 
@@ -78,7 +87,7 @@ if __name__ == '__main__':
     from paths import HISTORIES
     past_entries = glob('/'.join([HISTORIES, '*']))
     for ent in past_entries:
-        if len(os.listdir(ent)) < 2:
+        if len(os.listdir(ent)) < 2: # at most params.pkl
             rmtree(ent)
 
     main()
